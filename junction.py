@@ -33,7 +33,27 @@ import dns.resolver
 # Patch for problem with the TQDM Library
 tqdm.get_lock().locks = []
 
-commands=["sdel","grpchange","list","ver","sadd","validate","rights","usageover","password","statuscodes","commands","srvadd","srvdel","rebuild","destvolume","quota","rename","connections","check","cluster","keytab"]
+commands=["sdel",
+"grpchange",
+"list",
+"ver",
+"sadd",
+"validate",
+"rights",
+"usageover",
+"password",
+"statuscodes",
+"commands",
+"srvadd",
+"srvdel",
+"rebuild",
+"destvolume",
+"quota",
+"rename",
+"connections",
+"check",
+"cluster",
+"keytab"]
 errorlist={
 0:"STATUS 0 (Program exited successfully)",
 10:"ERROR 10 (One or more errors in validate)",
@@ -143,6 +163,11 @@ errorlist={
 211:"STATUS 211 (Rebuild of Master Junction List Complete '{}')",
 212:"STATUS 212 ('{}' lines written to '{}' from '{}')",
 213:"ERROR 213 (Errors Detected in '{}' from '{}')",
+220:"ERROR 220 (KVNO Not found in AD)",
+221:"ERROR 221 (NCP Volume '{}' not found on '{}')",
+222:"STATUS 222 (Keytab file '{}' created)",
+223:"ERROR 223 (Keytab file '{}' does not exist, run junction -o keytab)",
+224:"STATUS 224 (Server '{}' added to '{}')",
 250:"STATUS 250 (Junction Validation Underway)",
 251:"STATUS 251 (Junction Validation Completed)",
 252:"ERROR 252 (Number of Junctions on '{}' '{}' '{}' reports '{}')",
@@ -159,6 +184,33 @@ errorlist={
 500:"STATUS 500 (Quota of {} set on {})",
 501:"ERROR 501 (Error setting quota on {})",
 }
+
+def listvol(srv,user,pw):
+	
+	
+	"""List Volumes via _ADMIN"""
+	listvol=[]
+	file = ctx.open ("smb://"+srv+"/_admin/Manage_NSS/manage.cmd", os.O_CREAT | os.O_RDWR)
+	file.write("<virtualIO><datastream name=\"command\"/></virtualIO>\n")
+	cmdstring="""<nssRequest>
+		<volume>
+			<listVolumes type="nss"/>
+		</volume>
+	</nssRequest>"""
+	if debug=="yes":
+		print cmdstring
+	temp=nssfunc(cmdstring,file)
+	result=xmltodict.parse(temp)
+	
+	volist=result["nssReply"]["volume"]["listVolumes"]["volumeName"]
+	try:
+		listvol.append(volist["#text"])
+	except:
+		for line in volist:
+			listvol.append(line["#text"])
+	return listvol
+	
+	
 
 def dnscheck(host):
 	resp=[]
@@ -216,7 +268,8 @@ def kvnocheck(srv,basedn,obj,user,pw):
 	try:
 		kvno=int(srv[0]["attributes"]["msDS-KeyVersionNumber"])
 	except:
-		print "No Version Number found"
+		logstatus(220)
+		shutdown(220)
 	
 	
 	return kvno
@@ -297,7 +350,7 @@ def keytabupdate(ctx,server,dfsalias):
 	except:
 		logstatus(179,server)
 		shutdown(179)
-	cifs_copy_back(dest,ctx,path.replace("vol.keytab","vol."+uniquefname()))
+	cifs_copy_back(dest,ctx,new)
 	
 	os.system("chmod 777 "+dest)
 	os.system("klist -k "+dest)
@@ -315,6 +368,7 @@ def keytabupdate(ctx,server,dfsalias):
 	print
 	
 	os.system("klist -k "+dest)
+	print dest,path
 	try:
 		cifs_copy_back(dest,ctx,path)
 	except:
@@ -326,8 +380,9 @@ def keytabupdate(ctx,server,dfsalias):
 def keytabcreate(filename,principal,domain,kvno,password):
 	"""Linux Automate Creation of Keytab"""
 	
-	if os.path.exists(filename):
-		os.system("rm filename")
+	if os.path.isfile(filename):
+		os.system("chmod 777 "+filename)
+		os.system("rm "+filename)
 	prompt="ktutil:"
 	child=pexpect.spawn("ktutil")
 	i=child.expect([prompt,prompt],timeout=3)
@@ -1540,6 +1595,8 @@ def displayhelp():
 	print "junction -o connections".ljust(trim)+":CIFS Client connection details"
 	print "junction -o check -c /xx/xx/xx/file".ljust(trim)+":Checks the contents of the master.lst file"
 	print "junction -o grpchange -j /vol/junc".ljust(trim)+"-g domain\\group"
+	print "junction -o keytab".ljust(trim)+":Create a keytab file"
+	print "junction -o cluster".ljust(trim)+":Cluster Membership of DFSROOT Servers"
 	print 
 	print "junction -o sadd -j /vol/junc -t srv -p /vol/dir -g domain\\group -q xx(gb) -u yes/no"
 	print
@@ -2373,7 +2430,7 @@ pid=os.getpid()
 #user=os.getlogin()
 user=os.environ['USER']
 
-version="2.16(Beta)"	
+version="2.17(Beta)"	
 config = configparser.ConfigParser(inline_comment_prefixes=("#"))
 
 confpath="/var/opt/novell/junction"
@@ -3161,8 +3218,11 @@ if op=="srvadd":
 	pw3=pw("dfs","ad_config",None)
 	
 	
-	
-	
+	if not os.path.isfile(adKeytabName):
+		logstatus(223,adKeytabName)
+		shutdown(223)
+		
+		
 	
 	logstatus(170,server)
 	
@@ -3217,6 +3277,7 @@ if op=="srvadd":
 			print 
 			while True:
 				cnt=raw_input("Server "+server+" Is about to be configured, do you want continue (y/n)?")
+				print
 				if cnt=="y" or cnt=="y":
 					break					
 				else:
@@ -3224,6 +3285,7 @@ if op=="srvadd":
 					shutdown(101)
 					
 			print
+			
 			ctx=smbc.Context(auth_fn=auth_fn)
 			# Read cifs and nit config from server
 			temp=cifsconfig(server,linuser,password)
@@ -3237,16 +3299,28 @@ if op=="srvadd":
 			try:
 				ls=ctx.opendir(dirname).getdents()
 				logstatus(174,ciffshare,server)
+				print
 			except:
 				logstatus(175,ciffshare,server)
+				print
 				logstatus(176,ciffshare,server)
+				print
 				servername=server.split("/")[0]
-				path=raw_input("Enter Volume name only to create share on (no path)?")
-			
+				temp=listvol(server,ediruser,password)
+				while True:
+					print
+					path=raw_input("Enter NCP Volume Name for server "+server+" to create the CIFS share on?")
+					
+					if path.upper() in temp:
 				
-				temp=createshare(server,ciffshare,path.upper())
-			# Update Keytab
-			#print server,ctx
+						temp=createshare(server,ciffshare,path.upper())
+						break
+					else:
+						print
+						logstatus(221,path,server)
+						print
+			
+			
 			keytabupdate(ctx,server,dfsAlias)
 		
 			
@@ -3268,7 +3342,7 @@ if op=="srvadd":
 			volume=ndap(juncsource["clustervol"][0])
 			
 			count=len(junclist)
-			
+			junctotal=0
 			for temp in junclist:
 				mp=findmp(juncsource["clustervol"][0],volcache)
 				jprop=temp.split(",")
@@ -3305,10 +3379,11 @@ if op=="srvadd":
 				if stat=="9001":
 					logstatus(162,group)
 				if stat=="0":
+					
 					print 
 					print "STATUS Rights Applied to Junction\n"
 					logger.info(logstat+" Junction "+jpath+" Created and Rights applied on server "+server)
-			
+					junctotal+=1
 				
 			
 			
@@ -3317,18 +3392,19 @@ if op=="srvadd":
 			print "Summary"
 			print 	
 			numjunc=len(junclist)
-			actual=len(ctx.opendir(dirname).getdents())-3
+			actual=junctotal
 			print "Number of Junctions in Master.lst\t\t:"+str(numjunc)
 			print "Number of Junctions on "+server+"\t:"+str(actual)
 			print "Missing Junctions on "+server+"\t:"+str(numjunc-actual)
 			print
+			writefile(srvimport.replace(".lst",".lock"),srvimport,server+"\n")
+			logstatus(224,server,srvimport)
 			if numjunc-actual<>0:
 				
 				logstatus(102,server)
 				shutdown(102)
 			
 			logstatus(171,server)
-			writefile(srvimport.replace(".lst",".lock"),srvimport,server)
 			
 			
 	shutdown()
@@ -4873,36 +4949,46 @@ if op=="connections":
 		edir=0
 		line=line.replace("\n","")
 		temp,error=remotecmd(cmd,line,linuser,linpass)
-		#print temp,error
 		print line.upper()
-		if "Permission denied" in temp[1][0]:
+
+		if "Permission denied" in temp[0]:
 			print
 			logstatus(112,line)
 			print
+			summary[line]=[0,0]
 			continue	
-		if "There are no active CIFS client connections" in temp[0][0]:
+		if "There are no active CIFS client connections" in temp[0]:
 			print
-			print temp[0][0].replace("\n","")
+			print temp[0].replace("\n","")
 			print
-		else:
+			summary[line]=[0,0]
+			continue
+		
+		
+		#sys.exit()
+		if len(temp)<>1:
 			
+			#sys.exit()
+			print temp[0].replace("\n","")
+			print temp[1]
+			for lines in temp:
 				
-			for lines in temp[0]:
-			
 				if "Active Directory" in lines:
 					ad+=1
+					print lines.replace("\n","").replace("\m","")
 				elif "eDirectory" in lines:
 					edir+=1
-				print lines.replace("\n","").replace("\m","")
+					print lines.replace("\n","").replace("\m","")
+			print
 		summary[line]=[ad,edir]
 	
 	if len(summary)>0:
 		formatting="{:<40}{:>40}{:>40}"
-		print formatting.format("DFS ROOT SERVER","AD Clients","eDirectory Clients")		
+		print formatting.format("DFS ROOT SERVER SUMMARY","AD Clients","eDirectory Clients")		
 		print
-		for line in srvlist:
-			line=line.replace("\n","")
-			print formatting.format(line,summary[line][0],summary[line][1])
+	for line in srvlist:
+		line=line.replace("\n","")
+		print formatting.format(line,summary[line][0],summary[line][1])
 	print
 	logstatus(111)
 	shutdown()
@@ -4911,86 +4997,25 @@ if op=="connections":
 # Creation and Management of keytab	
 #==================================================================================
 if op=="keytab":
+	
+	print
+	print "Creating keytab file "+adKeytabName
+	print
+	
 	principal="cifs/"+ciffshare+"."+domain+"@"+domain.upper()
 	pw3=pw("dfs","ad_config",None)
 	adpass=pw3[1]
-	print aduser,adpass
+	
 	adaccountpw=lib.decrypt_val(adaccountpw)
-	print adaccountpw
+	
 	basedn=adaccount.lower()
 	name=basedn.split(",")[0].replace("cn=","")
 	temp=adspn(domain,basedn,name,principal,aduser,adpass)
 	temp=kvnocheck(domain,basedn,name,aduser,adpass)
 	temp=keytabcreate(adKeytabName,principal,domain,str(temp),adaccountpw)
-	print temp
-	sys.exit()
-
-	dest="/tmp"
 	print
-	summary={}
-	exclude=[]
-	
-	if conf<>None:
-		print "STATUS: Using Custom Server List "+conf
-		stat,srvlist=readfile(conf.replace(".lst",".lock"),conf)
-	else:   
-		try:
-			stat,srvlist=readfile(srvimport.replace(".lst",".lock"),srvimport)
-		except:
-			print "Server List Not found"
-			logger.info("Server List not found")
-			shutdown(46,srvimport)
-	
-	pw1=pw("dfs","edir_config",None)
-	pw2=pw("dfs","linux_user",None)
-	password=pw1[1]
-	linpass=pw2[1]
-	# Setup Authentication to CIFS
-	
-	server=srvlist[0].replace("\n","")
-	username=ediruser
-	password=pw1[1]
-	share="_admin"
-	ctx=smbc.Context(auth_fn=auth_fn)
-	
-		
-	
-	print "Edir User\t:"+adminuser
-	print "Linux User\t:"+linuser
-	print 
-	
-	username=ediruser
-	
-	checkalive(srvlist)
-	
-	if len(exclude)<>0:
-		srvlist=[item for item in srvlist if item not in exclude]
-	
-	
-	server1=srvlist[0].replace("\n","")
-
-	num=kvnocheck("cifs/dfs.novell.com",server1,linuser,pw2[1])
-	print num
-	keytabcreate(dest,principal,domain,"4","Password123")
-	sys.exit()
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	for line in srvlist:
-		line=line.replace("\n","")
-		
-		dest="/tmp/vol.keytab"
-		path="smb://"+line+"/"+ciffshare+"/._NETWARE/vol.keytab"
-		#print path
-		cifs_copy(ctx,path,dest)
-		
-		keytabcreate(dest,"host/skydrive.novell.com",domain,"4","Password123")
+	logstatus(222,adKeytabName)
+	shutdown()
 		
 	
 #===============================================================================
